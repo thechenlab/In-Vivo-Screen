@@ -1,0 +1,137 @@
+---
+title: "Figure 2"
+output: html_document
+date: "2025-10-10"
+---
+```{r}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+```
+
+```{r}
+#Figure 2b
+###read-in CM library results
+AT2_all_ctl_chromatin = read.delim('/Users/dsun/Desktop/In_vivo_screen_manuscript/CM_AT2_vs_plasmid_control.sgrna_summary.txt')
+AT2_all_ctl_chromatin = AT2_all_ctl_chromatin %>% dplyr::select(sgrna, Gene, LFC, FDR)
+
+###Annotation
+ref = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/CM_ref.csv', header = FALSE)
+colnames(ref) = c('gRNA', 'seq', 'geneid', 'category', 'alternative')
+ref[ref$geneid %in% c('Rosa26', 'Hipp11', 'TIGRE', 'NonTargetingControlGuideForMouse'), ]$category = 'Ctl'
+ref$geneid[ref$geneid == 'PRPF8'] = 'Prpf8'
+ref$geneid[ref$geneid == 'COPA'] = 'Copa'
+ref$geneid[ref$geneid == 'PLK1'] = 'Plk1'
+ref[ref$geneid %in% c('Prpf8', 'Copa', 'Plk1'), ]$category = 'Ctl_Essential'
+ref[ref$geneid %in% c('Nkx2-1', 'Etv5'), ]$category = 'AT2'
+ref[ref$geneid %in% c('ELF3'), ]$category = 'AT2, DATPs'
+AT2_all_ctl_chromatin$Gene[AT2_all_ctl_chromatin$Gene == 'PRPF8'] = 'Prpf8'
+AT2_all_ctl_chromatin$Gene[AT2_all_ctl_chromatin$Gene == 'COPA'] = 'Copa'
+AT2_all_ctl_chromatin$Gene[AT2_all_ctl_chromatin$Gene == 'PLK1'] = 'Plk1'
+AT2_all_ctl_chromatin$Gene[AT2_all_ctl_chromatin$Gene == 'ELF3'] = 'Elf3'
+
+
+AT2_all_ctl_chromatin = left_join(AT2_all_ctl_chromatin, ref, join_by('sgrna' == 'gRNA'))
+
+###remove gRNA with zero reads
+AT2_all_ctl_chromatin = AT2_all_ctl_chromatin[!AT2_all_ctl_chromatin$sgrna %in% c('Trim33_BD_e18.2'), ]
+
+AT2_all_ctl_chromatin$color = 'Not_changed'
+AT2_all_ctl_chromatin[AT2_all_ctl_chromatin$LFC < -0.5 & AT2_all_ctl_chromatin$FDR < 0.1, ]$color = 'Depleted'
+
+```
+
+```{r}
+###read-in TF library results
+AT2_all_ctl_TF = read.delim('/Users/dsun/Desktop/In_vivo_screen_manuscript/TF_AT2_vs_plasmid.sgrna_summary.txt')
+AT2_all_ctl_TF = AT2_all_ctl_TF %>% dplyr::select(sgrna, Gene, LFC, FDR)
+###Annotation
+TF_final_list = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/TF_ref.csv', row.names = 1)
+TF_final_list[TF_final_list$cluster == 'Type I', ]$cluster = 'AT1'
+TF_final_list[TF_final_list$cluster == 'primeAT2', ]$cluster = 'AT2'
+TF_final_list[TF_final_list$cluster == 'Transitioning', ]$cluster = 'DATPs'
+TF_final_list[TF_final_list$cluster == 'Type II', ]$cluster = 'AT2'
+
+TF_final_list_combined <- TF_final_list %>%
+  group_by(gene) %>%
+  summarise(category = paste(cluster, collapse = ", "))
+
+TF_final_list_clean <- TF_final_list_combined %>%
+  group_by(gene) %>%
+  summarise(category = paste(unique(str_trim(unlist(strsplit(category, ",")))), collapse = ", ")) %>%
+  ungroup()
+
+AT2_all_ctl_TF = left_join(AT2_all_ctl_TF, TF_final_list_clean, join_by('Gene' == 'gene'))
+
+AT2_all_ctl_TF[AT2_all_ctl_TF$Gene %in% c('NonTargetingControlGuideForMouse'), ]$category = 'Ctl'
+AT2_all_ctl_TF[AT2_all_ctl_TF$Gene %in% c('Plk1', 'Eif3a'), ]$category = 'Ctl_Essential'
+AT2_all_ctl_TF$color = 'Not_changed' 
+AT2_all_ctl_TF[AT2_all_ctl_TF$LFC > 0.5 & AT2_all_ctl_TF$FDR < 0.1, ]$color = 'Enriched'
+AT2_all_ctl_TF[AT2_all_ctl_TF$LFC < -0.5 & AT2_all_ctl_TF$FDR < 0.1, ]$color = 'Depleted'
+AT2_all_ctl_TF[AT2_all_ctl_TF$Gene %in% c('NonTargetingControlGuideForMouse'), ]$color = 'Control'
+
+```
+
+```{r}
+###combine the two
+combined_plot = rbind(AT2_Cas9_ctl_CC, AT2_all_ctl_TF)
+combined_plot$Gene <- as.character(combined_plot$Gene)
+combined_plot[combined_plot$Gene %in% c('NonTargetingControlGuideForMouse', 'Hipp11', 'Rosa26', 'TIGRE'), ]$Gene = 'TC/NTC'
+
+combined_plot$category <- factor(combined_plot$category,
+    levels = c("Ctl", "Ctl_Essential", "Demethylase", "BD", "HAT", "HDAC", "KMT", "PMRT", "SNF_ATPase", "AT2", "AT1", "DATPs", "Cycling", "AT2, AT1", 'AT2, DATPs', "Cycling, AT2, AT1", "DATPs, Cycling", "Cycling, AT1", "AT1, DATPs", "DATPs, AT1"))
+
+# Alphabetical within each category
+combined_plot <- combined_plot[order(combined_plot$category, combined_plot$Gene), ]
+
+# Now set factor levels for Gene to follow that order
+combined_plot$Gene <- factor(combined_plot$Gene, levels = unique(combined_plot$Gene))
+
+theme_set(theme_minimal(base_family = "Arial", base_size = 10))
+
+#combined_plot[combined_plot$Gene %in% c('NonTargetingControlGuideForMouse'), ]$Gene = 'NTC'
+
+p1 <- ggplot(combined_plot, aes(x = Gene, y = LFC, label = Gene)) +
+  geom_point(
+    aes(fill = color, size = -log10(FDR + 2.2e-201)),
+    shape = 21,
+    color = "black",
+    stroke = 0.3
+  ) +
+  scale_fill_manual(
+    values = c("#343a40", "#457B9D", "#E63946", "#e0e0e0"), 
+    name = "Type"
+  ) +
+  geom_hline(yintercept = c(-0.5, 0.5), linetype = "dashed", color = "gray40") +
+  geom_label_repel(
+    data = subset(combined_plot, (LFC > 0.5 & FDR <0.1) | (LFC < -0.5 & FDR < 0.1)),
+    max.overlaps = 30,
+    min.segment.length = unit(0, 'lines'),
+    size = 5,
+    box.padding = 0.3,
+    segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_size(name = "-Log10(FDR)") +
+  labs(x = NULL, y = "Log Fold Change") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6),
+    axis.text.y = element_text(size = 11),
+    axis.ticks = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(2, "pt"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+p1
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Figure 2b',
+       plot = p1, width = 550, height = 125, units = "mm", dpi = 300)
+```
+

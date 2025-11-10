@@ -1,0 +1,218 @@
+---
+title: "Extended_Data_Figure_2"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(ComplexHeatmap)
+library(ggrepel)
+```
+
+```{r}
+#Extended Data Figure 2b
+count_matrix = read.delim('/Users/dsun/Desktop/In_vivo_screen_manuscript/CM_count.txt')
+count_matrix = count_matrix %>% dplyr::select(sgRNA,Gene,A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,AAV2,AAV3,AAV4,AAV5,P1,P2,P4,P5)
+# Define a clean theme
+clean_theme <- theme_bw(base_size = 12) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    panel.grid = element_blank(),          # remove major and minor gridlines
+    axis.line = element_blank(),       # remove default axis lines
+    axis.ticks = element_line(color = "black"),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Individual plots
+g1 <- ggplot(count_matrix, aes(x = A6, y = A7)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black", se = FALSE, linetype = 'dashed') +
+  clean_theme
+
+g2 <- ggplot(count_matrix, aes(x = AAV2, y = P1)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black", se = FALSE, linetype = 'dashed') +
+  clean_theme
+
+g3 <- ggplot(count_matrix, aes(x = A1, y = P1)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black", se = FALSE, linetype = 'dashed') +
+  clean_theme
+
+g4 <- ggplot(count_matrix, aes(x = A1, y = AAV2)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black", se = FALSE, linetype = 'dashed') +
+  clean_theme
+
+# Combine plots
+g <- g1 + g3 + g2 + g4
+g
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended Data Figure 2b.png', plot = g, units = 'mm', width = 210, height = 200, dpi = 300)
+
+```
+
+
+```{r}
+###Extended Data Figure 2c
+###not including AAV1 and P3 due to low number of reads
+count_matrix = count_matrix %>% dplyr::select(sgRNA,Gene,A6,A7,A8,A9,A10,AAV2,AAV3,AAV4,AAV5,P1,P2,P4,P5)
+colnames(count_matrix) = c('sgRNA', 'Gene', 'AT2_1', 'AT2_2', 'AT2_3', 'AT2_4', 'AT2_5', 
+                           'AAV2','AAV3','AAV4','AAV5',
+                           'P1','P2','P4','P5')
+heatmap = matrix(nrow = 13, ncol = 13)
+for(i in 3: ncol(count_matrix)){
+  for (j in 3: ncol(count_matrix)){
+    heatmap[i-2, j-2] = cor(count_matrix[, i], count_matrix[, j])
+  }
+}
+colnames(heatmap) = colnames(count_matrix)[3:ncol(count_matrix)]
+rownames(heatmap) = colnames(count_matrix)[3:ncol(count_matrix)]
+
+Heatmap(
+  heatmap,
+  name = "Z-score",
+  col = c("#1f77b4", "white", "#d62728"),
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  row_names_side = "left",
+  show_row_dend = FALSE,
+  column_names_rot = 45,
+  rect_gp = gpar(col = "black", lwd = 0.5),  # light grey gridlines and thin border
+  border = TRUE,
+  heatmap_legend_param = list(
+    title = "Pearson's correlation",
+    legend_height = unit(4, "cm")
+  )
+)
+```
+
+```{r}
+###Extended Data Figure 2e
+###homeostasis TF
+TF_ref = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/TF_ref.csv', row.names = 1)
+TF_ref[TF_ref$cluster == 'Type I', ]$cluster = 'AT1'
+TF_ref[TF_ref$cluster == 'primeAT2', ]$cluster = 'AT2'
+TF_ref[TF_ref$cluster == 'Transitioning', ]$cluster = 'DATPs'
+TF_ref[TF_ref$cluster == 'Type II', ]$cluster = 'AT2'
+
+TF_ref <- TF_ref %>%
+  group_by(gene) %>%
+  summarise(category = paste(cluster, collapse = ", "))
+
+library(stringr)
+
+TF_ref <- TF_ref %>%
+  group_by(gene) %>%
+  summarise(category = paste(unique(str_trim(unlist(strsplit(category, ",")))), collapse = ", ")) %>%
+  ungroup()
+
+AT2_all_ctl = read.delim('/Users/dsun/Desktop/In_vivo_screen_manuscript/Homeostasis_TF_AT2_vs_control_sgrna_summary.txt')
+AT2_all_ctl = AT2_all_ctl %>% dplyr::select(sgrna, Gene, LFC, FDR)
+
+AT2_all_ctl = left_join(AT2_all_ctl, TF_ref, join_by('Gene' == 'gene'))
+
+AT2_all_ctl[AT2_all_ctl$Gene %in% c('NonTargetingControlGuideForMouse'), ]$category = 'Ctl'
+AT2_all_ctl[AT2_all_ctl$Gene %in% c('Plk1', 'Eif3a'), ]$category = 'Ctl_Essential'
+
+AT2_all_ctl$color = 'Not_changed'
+AT2_all_ctl[AT2_all_ctl$LFC > 0.5 & AT2_all_ctl$FDR < 0.1, ]$color = 'Enriched'
+#AT2_all_ctl[AT2_all_ctl$LFC < -0.5 & AT2_all_ctl$FDR < 0.1, ]$color = 'Depleted'
+AT2_all_ctl[AT2_all_ctl$Gene %in% c('NonTargetingControlGuideForMouse'), ]$color = 'Control'
+
+
+###homeostasis CM
+AT2_Cas9_ctl = read.delim('/Users/dsun/Desktop/In_vivo_screen_manuscript/Homeostasis_CM_AT2_vs_control_sgrna_summary.txt')
+AT2_Cas9_ctl = AT2_Cas9_ctl %>% dplyr::select(sgrna, Gene, LFC, FDR)
+ref = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/CM_ref.csv', header = FALSE)
+colnames(ref) = c('gRNA', 'seq', 'geneid', 'category', 'alternative')
+ref[ref$geneid %in% c('Rosa26', 'Hipp11', 'TIGRE', 'NonTargetingControlGuideForMouse'), ]$category = 'Ctl'
+ref$geneid[ref$geneid == 'PRPF8'] = 'Prpf8'
+ref$geneid[ref$geneid == 'COPA'] = 'Copa'
+ref$geneid[ref$geneid == 'PLK1'] = 'Plk1'
+ref[ref$geneid %in% c('Prpf8', 'Copa', 'Plk1'), ]$category = 'Ctl_Essential'
+ref[ref$geneid %in% c('Nkx2-1', 'Etv5'), ]$category = 'AT2'
+ref[ref$geneid %in% c('ELF3'), ]$category = 'AT2, DATPs'
+
+AT2_Cas9_ctl = left_join(AT2_Cas9_ctl, ref, join_by('sgrna' == 'gRNA'))
+
+###remove gRNAs with zero reads
+AT2_Cas9_ctl = AT2_Cas9_ctl[!AT2_Cas9_ctl$sgrna %in% c('Nsd3_e19.1', 'Nat10_e19.1', 'Trim33_BD_e17.1', 'Trim33_BD_e18.2', 'Setd1b_e15.1', 'Ttf2_H_e21.1'), ]
+
+AT2_Cas9_ctl$Gene[AT2_Cas9_ctl$Gene == 'PRPF8'] = 'Prpf8'
+AT2_Cas9_ctl$Gene[AT2_Cas9_ctl$Gene == 'COPA'] = 'Copa'
+AT2_Cas9_ctl$Gene[AT2_Cas9_ctl$Gene == 'PLK1'] = 'Plk1'
+AT2_Cas9_ctl$Gene[AT2_Cas9_ctl$Gene == 'ELF3'] = 'Elf3'
+
+AT2_Cas9_ctl$color = 'Not_changed' 
+#AT2_Cas9_ctl[AT2_Cas9_ctl$LFC > 0.5 & AT2_Cas9_ctl$FDR < 0.1, ]$color = 'Enriched'
+AT2_Cas9_ctl[AT2_Cas9_ctl$LFC < -0.5 & AT2_Cas9_ctl$FDR < 0.1, ]$color = 'Depleted'
+AT2_Cas9_ctl[AT2_Cas9_ctl$Gene %in% c('NonTargetingControlGuideForMouse', 'Rosa26', 'TIGRE', 'Hipp11'), ]$color = 'Control'
+
+AT2_Cas9_ctl = AT2_Cas9_ctl %>% dplyr::select(sgrna, Gene, LFC, FDR, category, color)
+
+###combine two plots
+###combine the two
+combined_plot = rbind(AT2_Cas9_ctl, AT2_all_ctl)
+combined_plot$Gene <- as.character(combined_plot$Gene)
+combined_plot[combined_plot$Gene %in% c('NonTargetingControlGuideForMouse', 'Hipp11', 'Rosa26', 'TIGRE'), ]$Gene = 'TC/NTC'
+
+combined_plot$category <- factor(combined_plot$category,
+    levels = c("Ctl", "Ctl_Essential", "Demethylase", "BD", "HAT", "HDAC", "KMT", "PMRT", "SNF_ATPase", "AT2", "AT1", "DATPs", "Cycling", "AT2, AT1", 'AT2, DATPs', "Cycling, AT2, AT1", "DATPs, Cycling", "Cycling, AT1", "AT1, DATPs", "DATPs, AT1"))
+
+# Alphabetical within each category
+combined_plot <- combined_plot[order(combined_plot$category, combined_plot$Gene), ]
+
+# Now set factor levels for Gene to follow that order
+combined_plot$Gene <- factor(combined_plot$Gene, levels = unique(combined_plot$Gene))
+
+theme_set(theme_minimal(base_family = "Arial", base_size = 10))
+
+#combined_plot[combined_plot$Gene %in% c('NonTargetingControlGuideForMouse'), ]$Gene = 'NTC'
+
+p1 <- ggplot(combined_plot, aes(x = Gene, y = LFC, label = Gene)) +
+  geom_point(
+    aes(fill = color, size = -log10(FDR + 2.2e-201)),
+    shape = 21,
+    color = "black",
+    stroke = 0.3
+  ) +
+  scale_fill_manual(
+    values = c("#343a40", "#457B9D", "#E63946", "#e0e0e0"), 
+    name = "Type"
+  ) +
+  geom_hline(yintercept = c(-0.5, 0.5), linetype = "dashed", color = "gray40") +
+  geom_label_repel(
+    data = subset(combined_plot, (LFC > 0.5 & FDR <0.1) | (LFC < -0.5 & FDR < 0.1)),
+    max.overlaps = 30,
+    min.segment.length = unit(0, 'lines'),
+    size = 5,
+    box.padding = 0.3,
+    segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_size(name = "-Log10(FDR)") +
+  labs(x = NULL, y = "Log Fold Change") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6),
+    axis.text.y = element_text(size = 11),
+    axis.ticks = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(2, "pt"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+p1
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended Data Figure 2e.png",
+       plot = p1, width = 550, height = 125, units = "mm", dpi = 300)
+
+```
+
