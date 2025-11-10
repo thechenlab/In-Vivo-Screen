@@ -1,0 +1,164 @@
+---
+title: "Extended Data Figure 6"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+library(qs)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(hexbin)
+```
+
+
+```{r}
+####Extended data figure 6b
+
+perturb_TF = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/perturb_TF.qs')
+module_scores = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/module_combined_scores.csv')
+perturb_TF@meta.data$cb = row.names(perturb_TF@meta.data)
+perturb_TF@meta.data = left_join(perturb_TF@meta.data, module_scores, join_by('cb' == 'X'))
+row.names(perturb_TF@meta.data) = perturb_TF@meta.data$cb
+
+meta.data = perturb_TF@meta.data
+meta.data_AT1 = meta.data %>% dplyr::select(gene, X5)
+meta.data_AT1 = meta.data_AT1 %>% group_by(gene) %>% summarise(average = mean(X5))
+
+###remove gRNA group with fewer than 100 cells
+meta.data_AT1 = meta.data_AT1[!meta.data_AT1$gene %in% c('Carhsp1', "Hmgb1"), ]
+
+meta.data_AT1 <- meta.data_AT1 %>%
+  arrange(desc(average)) %>%
+  mutate(rank = row_number())
+
+meta.data_AT1 <- meta.data_AT1 %>%
+  mutate(highlight = average > 0.5 | average < -0.5,
+         label_gene = ifelse(highlight, gene, NA))
+
+p = ggplot(meta.data_AT1, aes(x = rank, y = average)) +
+  geom_point(aes(color = highlight), size = 1) +
+  geom_point(data = meta.data_AT1 %>% filter(gene == "NonTargetingControlGuideForMouse"),
+             color = "#2166AC", size = 1) +
+  geom_text_repel(data = meta.data_AT1 %>% filter(highlight),
+                  aes(label = gene),
+                  size = 4, max.overlaps = 100) +
+  geom_text_repel(
+    data = meta.data_AT1 %>% filter(gene == "NonTargetingControlGuideForMouse"),
+    aes(label = "Control"),
+    color = "#2166AC", size = 4, max.overlaps = 100
+  ) +
+  scale_color_manual(values = c("black", "#d62728")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", size = 0.3),     # thinner outline
+  axis.ticks = element_line(size = 0.3),                        # thinner ticks
+  axis.title = element_text(size = 12),
+  axis.text = element_text(size = 10),
+  plot.title = element_text(size = 14, hjust = 0.5))+
+  labs(title = "Rank Plot of gRNA effects on AT1 program",
+       x = "Rank",
+       y = "average_AT1_program",
+       color = NULL) 
+
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.6b.png", plot = p, width = 122, height = 100, units = 'mm',dpi = 300)
+```
+
+```{r}
+####Extended data figure 6c
+
+scatter_plot = perturb_TF@meta.data %>% dplyr::select(gene, sgrna, timepoint, X7, X5, X6)
+colnames(scatter_plot) = c('gene', 'sgrna', 'timepoint','AT2', 'AT1', 'Aberrant')
+scatter_plot$AT1_z <- scale(scatter_plot$AT1)[,1]
+scatter_plot$Aberrant_z <- scale(scatter_plot$Aberrant)[,1]
+scatter_plot$AT2_z <- scale(scatter_plot$AT2)[,1]
+
+###Using the PC1
+at1_Aberrant_mat <- scatter_plot %>% dplyr::select(AT1_z, Aberrant_z)
+pca_result <- prcomp(at1_Aberrant_mat, center = TRUE, scale. = FALSE)
+scatter_plot$lineage_pc1 <- pca_result$x[, 1]
+
+set.seed(120)
+scatter_plot_selected <- scatter_plot %>%
+  filter(gene %in% c('Max', 'Nkx2-1', 'NonTargetingControlGuideForMouse', 'Cebpa', 'Ssrp1', 'Etv5', 'Gata6')) %>%
+  group_by(gene) %>%
+  group_modify(~ slice_sample(.x, n = min(400, nrow(.x)))) %>%
+  ungroup()
+
+scatter_plot_selected <- scatter_plot_selected %>%
+  mutate(gene = ifelse(gene == "NonTargetingControlGuideForMouse", "Control", gene))
+
+# Set gene order
+scatter_plot_selected$gene <- factor(scatter_plot_selected$gene,
+                                     levels = c("Control", "Nkx2-1", "Max", "Ssrp1", 'Cebpa', 'Etv5', 'Gata6'))
+
+# Plot lineage_pc1 vs. AT2_z
+p <- ggplot(scatter_plot_selected, aes(x = lineage_pc1, y = AT2_z)) +
+  geom_hex(bins = 30) +
+  scale_fill_viridis_c() +
+  facet_wrap(~gene, nrow = 1) +
+  geom_vline(xintercept = c(-2, 2), linetype = "dashed") +
+  xlim(c(-10, 10)) +
+#  ylim(c(-15, 10)) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", linewidth = 0.3),
+    axis.ticks = element_line(linewidth = 0.3),                   # match tick thickness
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.3),  # thinner border
+    strip.text = element_text(size = 8),
+    strip.background = element_rect(color = "black", fill = "white", linewidth = 0.3),  # thinner facet outline
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13)
+  ) +
+  labs(x = "Lineage (PC1 of AT1 vs Aberrant)",
+       y = "AT2 z-score")
+
+p
+
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.6c.png', plot = p, dpi = 300, units = 'mm', height = 50, width = 300)
+```
+
+```{r}
+###Extended data figure 6c
+
+###Extract the data
+dotplot_data <- DotPlot(
+  subset(perturb_TF, gene %in% c("NonTargetingControlGuideForMouse", 'Klf10','Trp53', "Max", "Ssrp1", 'Cebpa', 'Etv5', 'Gata6')),
+  features = c("Ager", "Hopx", 'Vegfa', 'Aqp5', 'Spock2', 'Cav1'),
+  group.by = "gene"
+)$data
+
+dotplot_data$id <- as.character(dotplot_data$id)
+
+dotplot_data <- dotplot_data %>%
+  mutate(id = ifelse(id == "NonTargetingControlGuideForMouse", "Control", id))
+
+###change the plotting sequence
+dotplot_data$id <- factor(dotplot_data$id,
+                                levels = c('Max', 'Ssrp1','Cebpa', 'Etv5', 'Gata6',"Control", "Klf10", 'Trp53'))
+
+# using ggplot to have better control
+p = ggplot(dotplot_data, aes(x = features.plot, y = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), 
+             shape = 21, color = "black", stroke = 0.3) +
+  scale_fill_gradient2(low = "#1f77b4", mid = "white", high = "#d62728", midpoint = 0) +
+  scale_size(range = c(1, 6)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),         # remove all grid lines
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  # add black outline
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text = element_text(size = 12),
+    axis.title = element_blank()
+  ) +
+  labs(size = "% Expressed", fill = "Average Expression")
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.6d.png", plot = p, width = 230, height = 80, units = 'mm',dpi = 300)
+```
+
+

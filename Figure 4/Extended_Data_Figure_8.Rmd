@@ -1,0 +1,188 @@
+---
+title: "Extended Data Figure 8"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+library(qs)
+library(Seurat)
+library(SingleCellExperiment)
+library(destiny)
+library(slingshot)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(FNN)
+library(ggrepel)
+```
+
+```{r}
+#Extended Data Figure 8b
+DE_DATP = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/DE_DATP.csv', row.names = 1)
+DE_DATP$gene = row.names(DE_DATP)
+
+DE_DATP$group = 'other'
+DE_DATP$group[DE_DATP$gene %in% c('Ifit1', 'Ifit2', 'Ifit3', 'Ifi27l2b', 'Isg15', 'Oasl1', 'Oasl2', 'Rsad2', 'Ddx60', 'Stat1', 'Irf1', 'Irf7', 'Zbp1', 'Usp18', 'Gbp3', 'Gbp4', 'Gbp5', 'Gbp6', 'Gbp7', 'Gbp8', 'Gbp9', 'Ifih1', 'Ifngr1')] = 'Innate immune signaling'
+DE_DATP$group[DE_DATP$gene %in% c('Gsto1', 'Gstm1', 'Gstm2', 'Gstm4', 'Gstm5', 'Mgst2', 'Sqor', 'Nqo1', 'Cyp2s1', 'Cyp3a13',
+                                  'Mt2', 'Glul')] = 'Oxidative & ER stress adaptation'
+DE_DATP$group[DE_DATP$gene %in% c('Sftpa1', 'Sftpb', 'Sftpc', 'Sftpd', 'Sfta2',
+                                  'Abca3', 'Napsa', 'Lpcat1', 'Slc34a2', 'Slc26a9',
+                                  'Hopx', 'Aqp5', 'Ager')] = 'Alveolar lineage'
+DE_DATP$group[DE_DATP$gene %in% c('Cdkn2a', 'Cdkn2b', 'Bok', 'Pmaip1', 'Birc2')] = 'Senescence & Apoptosis'
+
+colors <- c("Oxidative & ER stress adaptation" = "#ff7f0e", "Innate immune signaling" = "#31a354", 'Alveolar lineage' = '#1f77b4', 'Senescence & Apoptosis'= '#9467bd' ,"Other" = "gray70")
+
+p = ggplot(DE_DATP, aes(x = avg_log2FC, y = -log10(p_val_adj+1e-100), color = group)) +
+  geom_jitter(aes(size = ifelse(group %in% c("Oxidative & ER stress adaptation", "Innate immune signaling", 'Alveolar lineage', 'Senescence & Apoptosis'), 3, 1)), alpha = 0.6) +  # Plot all points
+  geom_text_repel(data = subset(DE_DATP, group %in% c("Oxidative & ER stress adaptation", "Innate immune signaling", 'Alveolar lineage', 'Senescence & Apoptosis')), aes(label = gene), size = 4, max.overlaps = 50, box.padding = 0.5) +  # Label selected genes only
+  scale_color_manual(values = colors) +  # Custom colors
+  labs(x = "X-axis Label", y = "-log10 p-value", title = "Gene Expression Plot")+
+  theme_bw()+
+  xlim(c(-5, 5)) +
+  theme(
+    panel.grid = element_blank(),
+    legend.text = element_text(size = 10)
+  )
+p
+
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended Data Figure 8b.png', plot = p, dpi = 300, width = 325, height = 175, units = 'mm')
+```
+
+```{r}
+#Extended Data Figure 8e
+perturb_TF = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/perturb_TF.qs')
+
+#Build the diffusion map on alveolar states, fit Slingshot in DM space
+label_col <- if ("state" %in% colnames(perturb_TF@meta.data)) "state" else "cell_type"
+cell_type_keep <- c("AT2","AT2-AT1","DATP-1","DATP-2","aberrant","AT1")
+stopifnot("harmony" %in% names(perturb_TF@reductions))
+
+# Subset to alveolar states (keep existing embeddings)
+x <- subset(perturb_TF, cell_type%in% cell_type_keep)
+rm(perturb_TF)
+
+# Harmony PCs (cells x 30)
+harm_all <- Embeddings(x, "harmony")[, 1:30, drop = FALSE]
+N <- nrow(harm_all)
+
+#Stratified training subset (balanced, small)
+set.seed(1234)
+meta <- x@meta.data
+grp <- if ("timepoint" %in% colnames(meta)) interaction(x$cell_type, meta$timepoint, drop=TRUE) else x$cell_type
+n_train <- min(10000L, max(3000L, floor(0.25 * N)))  # aim for 3k–10k training cells
+idx_train <- unlist(lapply(split(seq_len(N), grp), function(ix){
+  m <- length(ix); size <- max(300L, round(n_train * m / N))
+  sample(ix, size = min(size, m))
+}))
+idx_train <- sort(unique(idx_train))
+harm_train <- harm_all[idx_train, , drop = FALSE]
+
+#Fit DM on training set (small k, few eigs)
+k_use  <- max(20L, round(0.008 * length(idx_train))) # ~0.8% of train, >=20
+k_use  <- min(k_use, 60L)
+dm_train <- DiffusionMap(harm_train, k = k_use, sigma = "local", n_eigs = 10)
+
+# Project ALL cells into the trained DM
+DC_train <- as.matrix(eigenvectors(dm_train))         # train × 10
+colnames(DC_train) <- paste0("DC", seq_len(ncol(DC_train)))
+
+DC_all <- try(predict(dm_train, data = harm_all), silent = TRUE)
+if (inherits(DC_all, "try-error") || is.null(dim(DC_all))) {
+  message("destiny::predict not available; using KNN averaging to project.")
+  nn <- get.knnx(harm_train, harm_all, k = 10)        # neighbors in Harmony space
+  w  <- 1 / (nn$nn.dist + 1e-8)
+  w  <- w / rowSums(w)
+  DC_all <- matrix(0, nrow = N, ncol = ncol(DC_train))
+  for (i in seq_len(N)) {
+    DC_all[i, ] <- crossprod(w[i, ], DC_train[nn$nn.index[i, ], , drop = FALSE])
+  }
+  colnames(DC_all) <- colnames(DC_train)
+}
+rm(harm_train); gc()
+
+#Slingshot in diffusion space
+sce <- as.SingleCellExperiment(x)
+reducedDims(sce)$DM <- DC_all
+colData(sce)$cell_type  <- x$cell_type
+
+sce <- slingshot(
+  sce,
+  clusterLabels = "cell_type",
+  reducedDim    = "DM",
+  start.clus    = 'AT2',
+  end.clus      = c('AT1','aberrant')
+)
+
+PT <- slingPseudotime(sce)
+W  <- slingCurveWeights(sce)
+crv <- slingCurves(sce)
+
+# Label branches by endpoint weights
+st <- as.character(colData(sce)$cell_type)
+to_AT1  <- sapply(seq_len(ncol(W)), function(j) mean(W[st=="AT1", j], na.rm=TRUE))
+to_ABERRANT <- sapply(seq_len(ncol(W)), function(j) mean(W[st=="aberrant", j], na.rm=TRUE))
+lin_label <- ifelse(to_AT1 > to_ABERRANT, "AT1_branch", "ABERRANT_branch")
+idx_AT1 <- which(lin_label=="AT1_branch"); idx_ABR <- which(lin_label=="ABERRANT_branch")
+
+w_AT1 <- if (length(idx_AT1)) rowSums(W[, idx_AT1, drop=FALSE], na.rm=TRUE) else rep(0, N)
+w_ABR <- if (length(idx_ABR)) rowSums(W[, idx_ABR, drop=FALSE], na.rm=TRUE) else rep(0, N)
+branch_bias <- w_ABR - w_AT1
+pt_AT1 <- if (length(idx_AT1)) PT[, idx_AT1[1]] else rep(NA_real_, N)
+pt_ABR <- if (length(idx_ABR)) PT[, idx_ABR[1]] else rep(NA_real_, N)
+
+# Plots (DM1–DM2)
+dc_df <- data.frame(
+  DC1 = DC_all[,1], DC2 = DC_all[,2],
+  state = x$cell_type,
+  branch_bias = branch_bias,
+  pt_AT1 = pt_AT1, pt_ABR = pt_ABR,
+  cell = colnames(x)
+)
+crv_df <- dplyr::bind_rows(lapply(seq_along(crv), function(i){
+  data.frame(DC1 = crv[[i]]$s[crv[[i]]$ord, 1],
+             DC2 = crv[[i]]$s[crv[[i]]$ord, 2],
+             lineage = lin_label[i])
+}))
+
+###plotting
+p_state <- ggplot(dc_df, aes(DC1, DC2, color = state)) +
+  geom_point(size = 0.45, alpha = 0.85) +
+  geom_path(data = crv_df, aes(DC1, DC2, group = lineage),
+            inherit.aes = FALSE, linewidth = 1.05, color = "black") +
+  scale_color_manual(values = c(
+    "AT2"      = "#ff7f0e",
+    "AT2-AT1"  = "#2ca02c",
+    "AT1"      = "#aec7e8",
+    "DATP-1"   = "#9467bd",
+    "DATP-2"   = "#c5b0d5",
+    "aberrant" = "#1f77b4"
+  )) +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +
+  labs(title = "Diffusion map (trained on subset) with Slingshot curves",
+       color = "Cell state")
+p_state
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended Data Figure 8e_cell_type.png', plot = p_bias, dpi = 300, width = 123, height = 100, units = 'mm')
+
+p_bias <- ggplot(dc_df, aes(DC1, DC2, color = branch_bias)) +
+  geom_point(size = 0.45, alpha = 0.9) +
+  scale_color_gradient2(low = "steelblue", mid = "grey90", high = "firebrick", midpoint = 0) +
+  geom_path(data = crv_df, aes(DC1, DC2, group = lineage),
+            inherit.aes = FALSE, linewidth = 1.0, color = "black") +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +
+  labs(title = "Branch bias (−AT1 - +aberrant)", color = "bias")
+
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended Data Figure 8e_bias.png', plot = p_bias, dpi = 300, width = 123, height = 100, units = 'mm')
+```
+
+

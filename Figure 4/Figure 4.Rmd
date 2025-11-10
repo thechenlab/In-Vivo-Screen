@@ -1,0 +1,584 @@
+---
+title: "Figure 4"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+library(qs)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(tidyr)
+library(forcats)
+library(grid)
+library(circlize)
+library(ComplexHeatmap)
+library(ggpubr)
+library(UCell)
+```
+
+```{r}
+#Fig.4b
+perturb_TF = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/perturb_TF.qs')
+
+perturb_TF@meta.data$gross_type = perturb_TF@meta.data$cell_type
+perturb_TF@meta.data$gross_type[perturb_TF@meta.data$cell_type %in% c('DATP-1', 'DATP-2')] = 'DATP'
+
+tab20_colors <- c(
+  "#1f77b4", "#aec7e8",  # blue
+  "#ff7f0e", "#ffbb78",  # orange
+  "#2ca02c", "#98df8a",  # green
+  "#d62728", "#ff9896",  # red
+#  "#9467bd", "#c5b0d5",  # purple
+  "#8c564b", "#c49c94",  # brown
+  "#e377c2", "#f7b6d2",  # pink
+  "#7f7f7f", "#c7c7c7",  # gray
+  "#bcbd22", "#dbdb8d",  # olive
+  "#17becf", "#9edae5"   # cyan
+)
+
+p1 = DimPlot(perturb_TF, reduction = 'umap', group.by = 'gross_type', raster=FALSE, cols = tab20_colors)
+p1
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig4b.png", plot = p1, width = 235, height = 200, units = 'mm',dpi = 600)
+```
+
+```{r}
+#Fig 4c
+###plotting the gRNAs
+umap_df <- Embeddings(perturb_TF, "umap") %>%
+  as.data.frame()
+umap_df$cell_type <- perturb_TF$cell_type
+umap_df$timepoint <- perturb_TF@meta.data$timepoint
+umap_df$gene <- perturb_TF@meta.data$gene
+umap_df$flag <- 'others'
+umap_df[umap_df$gene %in% c('Nkx2-1'), ]$flag = 'Nkx2-1'
+
+# Split the data
+df_others <- subset(umap_df, flag == "others")
+df_nkx2_1 <- subset(umap_df, flag == "Nkx2-1")
+
+# Plot in layers
+p2 = ggplot() +
+  geom_point(data = df_others, aes(x = umap_1, y = umap_2), color = "#a1d76a", size = 0.2, alpha = 0.3) +
+  geom_point(data = df_nkx2_1, aes(x = umap_1, y = umap_2), color = "#c51b7d", size = 0.4, alpha = 0.7) +
+  theme_minimal(base_size = 12) +
+  facet_wrap(~timepoint, ncol = 2)+
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.6),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "none"
+  )
+p2
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4c.png", plot = p2, width = 200, height = 200, units = 'mm',dpi = 600)
+```
+
+```{r}
+#Fig.4d
+module_scores = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/module_combined_scores.csv')
+perturb_TF@meta.data$cb = row.names(perturb_TF@meta.data)
+perturb_TF@meta.data = left_join(perturb_TF@meta.data, module_scores, join_by('cb' == 'X'))
+row.names(perturb_TF@meta.data) = perturb_TF@meta.data$cb
+meta.data = perturb_TF@meta.data
+df_use = meta.data %>% dplyr::select(gene, X7, X5, X6, X8, X13, X1, X3)
+colnames(df_use) = c('gene', 'AT2', 'AT1', 'aberrant', 'DATP', 'stress_ress', 'inf_res', 'proliferation')
+
+ko_means <- df_use %>%
+  group_by(gene) %>%
+  summarize(
+    dAT1    = mean(AT1,    na.rm = TRUE),
+    dAT2    = mean(AT2,    na.rm = TRUE),
+    dDATP   = mean(DATP,   na.rm = TRUE),   
+    dAbr    = mean(aberrant,    na.rm = TRUE),
+    dInf    = mean(inf_res,    na.rm = TRUE),
+    dStress = mean(stress_ress, na.rm = TRUE),
+    dProlif = mean(proliferation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ko_means$gene[ko_means$gene == "NonTargetingControlGuideForMouse"] = 'Control'
+
+###Set a cutoff for cell numbers
+cell_num_all = meta.data %>% group_by(gene) %>% summarise(n = n())
+gene_cutoff_all = cell_num_all[cell_num_all$n <= 50, ]$gene
+
+ko_means = ko_means[!ko_means$gene %in% gene_cutoff_all, ]
+
+# Convert to deltas by subtracting the control gRNA row
+stopifnot("Control" %in% ko_means$gene)
+ntc <- ko_means %>% filter(gene == "Control") %>% select(-gene)
+
+ko_delta <- ko_means %>%
+  filter(gene != "Control") %>%
+  mutate(
+    dAT1    = dAT1    - ntc$dAT1,
+    dAT2    = dAT2    - ntc$dAT2,
+    dDATP   = dDATP   - ntc$dDATP,
+    dAbr    = dAbr    - ntc$dAbr,
+    dInf    = dInf    - ntc$dInf,
+    dStress = dStress - ntc$dStress,
+    dProlif = dProlif - ntc$dProlif
+  )
+
+###group TF knockout effects
+
+zscore_safe <- function(x){
+  x <- as.numeric(x); mu <- mean(x, na.rm = TRUE); sdv <- sd(x, na.rm = TRUE)
+  if (!is.finite(sdv) || sdv == 0){
+    madv <- mad(x, constant = 1, na.rm = TRUE)
+    return((x - mu) / (madv + 1e-6))
+  }
+  (x - mu) / (sdv + 1e-12)
+}
+
+df <- ko_delta
+
+#L1: decide on AT2 retention
+at2_score   <- df$dAT2        
+at2_highend <- quantile(at2_score, c(0.35, 0.75), na.rm = TRUE)
+
+labels_L1 <- df %>%
+  mutate(
+    L1 = case_when(
+      at2_score >= at2_highend[2] ~ "AT2 retention",
+      at2_score <= at2_highend[1] ~ "AT2 sig down",
+      TRUE              ~ "Neutral"
+    )
+  )
+
+Zdf <- labels_L1 %>%
+  transmute(
+    gene,
+    zAT1 = zscore_safe(dAT1),
+    zAbr = zscore_safe(dAbr),
+    zAT2 = zscore_safe(dAT2)
+  )
+
+## L2 axis built from RAW deltas (AT1 vs Dys)
+# Build TB_pc from raw deltas with covariance standardization
+X_raw <- as.matrix(labels_L1[, c("dAT1","dAbr")])
+colnames(X_raw) <- c("dAT1","dAbr")
+
+S <- tryCatch({
+  if (requireNamespace("robustbase", quietly = TRUE)) robustbase::covMcd(X_raw)$cov
+  else stats::cov(X_raw, use = "pairwise.complete.obs")
+}, error = function(e) stats::cov(X_raw, use = "pairwise.complete.obs"))
+
+if (any(!is.finite(S))) S[!is.finite(S)] <- 0
+a   <- c(1, -1)
+den <- as.numeric(sqrt(t(a) %*% S %*% a))
+if (!is.finite(den) || den <= 1e-8) den <- sqrt(sum(diag(S))) + 1e-6
+
+TB_raw <- drop((X_raw %*% a) / den)          # standardized contrast from RAW
+# Orient TB to increase with dAT1
+if (cor(TB_raw, labels_L1$dAT1, use = "complete.obs") < 0) TB_raw <- -TB_raw
+tau   <- max(1.2, mad(TB_raw, constant = 1, na.rm = TRUE))
+TB_pc <- tanh(TB_raw / tau)
+
+## Terminal magnitude / mixedness from RAW deltas
+
+pos_AT1_raw <- pmax(labels_L1$dAT1, 0)
+pos_Abr_raw <- pmax(labels_L1$dAbr, 0)
+
+TermMag_raw  <- pos_AT1_raw + pos_Abr_raw
+MixScore_raw <- ifelse(TermMag_raw > 0,
+                       pmin(pos_AT1_raw, pos_Abr_raw) / TermMag_raw, 0)
+
+labels_L1L2 <- labels_L1 %>%
+  bind_cols(tibble(
+    zAT1 = Zdf$zAT1, zAbr = Zdf$zAbr, zAT2 = Zdf$zAT2,     # for viz only
+    TB_pc = TB_pc,
+    TermMag = TermMag_raw,
+    MixScore = MixScore_raw
+  ))
+
+## Thresholds (computed on RAW-derived metrics)
+t_mag  <- quantile(labels_L1L2$TermMag, 0.8, na.rm = TRUE)
+t_bias <- max(0.25,  # bias floor (lenient); raise to 0.35–0.5 for stricter bias calls
+              quantile(abs(labels_L1L2$TB_pc[labels_L1L2$TermMag >= t_mag]),
+                       0.70, na.rm = TRUE))
+t_mix  <- max(0.35,  # mixed floor; raise to 0.30–0.35 to require stronger co-activation
+              quantile(labels_L1L2$MixScore[labels_L1L2$TermMag >= t_mag],
+                       0.70, na.rm = TRUE))
+
+labels_L1L2 <- labels_L1L2 %>%
+  mutate(
+    L2 = case_when(
+      # L1 overrides / low-impact
+      L1 == "AT2 retention"                                   ~ "AT2 retention",
+
+      # Strong terminalizer: Mixed ONLY when both up sufficiently
+      TermMag >= t_mag & MixScore >= t_mix                    ~ "Mixed fated",
+
+      # Pure positives (exactly one program up)
+      TermMag >= t_mag & MixScore == 0 & pos_AT1_raw > 0      ~ "AT1 biased",
+      TermMag >= t_mag & MixScore == 0 & pos_Abr_raw > 0      ~ "Aberrant biased",
+
+      # Both up but not mixed enough → bias gates
+      TermMag >= t_mag & TB_pc >=  t_bias                     ~ "AT1 biased",
+      TermMag >= t_mag & TB_pc <= -t_bias                     ~ "Aberrant biased",
+
+      # Fallback for strong but borderline: send to larger positive
+      TermMag >= t_mag & pos_AT1_raw >= pos_Abr_raw           ~ "AT1 biased",
+      TermMag >= t_mag & pos_Abr_raw >  pos_AT1_raw          ~ "Aberrant biased",
+      
+      # Not strong terminalizer
+      TermMag < t_mag                                         ~ "Low-impact",
+      
+      TRUE                                                    ~ "Transitional (non-terminal)"
+    )
+  )
+```
+
+
+```{r}
+###plot using L2 labels
+l2_df <- data.frame(
+   gene = labels_L1L2$gene,
+   L2   = labels_L1L2$L2
+ )
+###adding control group
+l2_df[117, ]$gene = 'Control'
+l2_df[117, ]$L2 = 'Low-impact'
+
+# Step 1: Get list of control guide rows
+control_rows <- ko_means %>% filter(gene == "Control")
+control_means <- colMeans(control_rows[, -which(colnames(control_rows) == "gene")], na.rm = TRUE)
+
+# Convert to matrix and subtract
+df_mat <- as.matrix(ko_means[, -which(colnames(ko_means) == "gene")])
+df_scaled <- sweep(df_mat, 2, control_means, FUN = "-")  # subtract control mean from each column
+
+rownames(df_scaled) <- ko_means$gene
+
+df_capped <- pmax(pmin(df_scaled, 2), -2)
+
+col_fun <- colorRamp2(
+  c(-1.5, -0.75, 0, 0.75, 1.5),
+  c("#2166AC", "#67A9CF", "white", "#EF8A62", "#B2182B")
+)
+
+l2_df <- l2_df[match(rownames(df_capped), l2_df$gene), ]
+unique(l2_df$L2)
+
+l2_levels <- c("AT2 retention","AT1 biased","Aberrant biased","Mixed fated","Low-impact")
+l2_df$L2 <- factor(l2_df$L2, levels = intersect(l2_levels, unique(l2_df$L2)))
+```
+
+
+```{r}
+png("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4d.png", width = 4500, height = 800, res = 300)
+Heatmap(
+  t(df_capped),
+# name = "Average_program_score_centered_NT",
+  col = col_fun,
+  heatmap_legend_param = list(
+  title = "Avg_score",
+  title_gp = gpar(fontsize = 10),
+  labels_gp = gpar(fontsize = 8)
+),
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  show_row_names = TRUE,
+  column_split = l2_df$L2,              # <<< chunking by L2
+  gap = unit(2, "mm"),                  # gap between chunks
+  row_names_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize = 8),
+  border = "black",
+  cluster_column_slices = FALSE,
+  rect_gp = gpar(col = "black", lwd = 0.3),     # cell border
+  show_column_names = TRUE,
+  column_names_rot = 90,
+# row_dend_gp = gpar(lwd = 0.5, col = "black", lty = 1),     # row dendrogram
+# column_dend_gp = gpar(lwd = 0.5, col = "black", lty = 1),   # column dendrogram
+  show_row_dend = FALSE,
+  show_column_dend = FALSE,
+  row_dend_width = unit(5, "mm"),           # shrink row dendrogram
+  column_dend_height = unit(5, "mm"),        # shrink column dendrogram
+  column_title_gp = gpar(fontsize = 10, fontface = "bold")
+)
+dev.off()
+```
+
+```{r}
+#Fig.4g
+IPF_Epi_sub = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/IPF.qs')
+color_use = c("#d62728","#ff9896", "#c49c94","#f7b6d2", "#8c564b")
+DimPlot(IPF_Epi_sub, reduction = 'umap', group.by = 'celltype', cols = color_use)
+
+dotplot_data <- DotPlot(subset(IPF_Epi_sub, celltype %in% c('AT2', 'KRT5-/KRT17+', 'Transitional AT2')), c('CDKN2A','CDKN2B','SFTPC', 'LAMP3', 'SFTPB', 'SFTPD', 'CLDN4', 'KRT8', 'KRT7', 'FHL2', 'S100A2', 'KRT17', 'SOX4', 'LAMB3', 'ITGA2', 'PALLD', 'CDH3', 'PLAU'), group.by = 'celltype')$data
+
+dotplot_data$id <- factor(dotplot_data$id,
+                                levels = c('AT2', 'Transitional AT2', 'KRT5-/KRT17+'))
+
+p = ggplot(dotplot_data, aes(x = features.plot, y = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), 
+             shape = 21, color = "black", stroke = 0.3) +
+  scale_fill_gradient2(low = "#1f77b4", mid = "white", high = "#d62728", midpoint = 0) +
+  scale_size(range = c(1, 6)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+    axis.text = element_text(size = 12),
+    axis.text.y = element_blank(),  
+    axis.title = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(size = "% Expressed", fill = "Average Expression")
+p
+dotplot_data_mouse <- DotPlot(subset(perturb_TF, cell_type %in% c('AT2', 'DATP-1', 'DATP-2')), c('Cdkn2a','Cdkn2b','Sftpc', 'Lamp3', 'Sftpb', 'Sftpd', 'Cldn4', 'Krt8', 'Krt7', 'Fhl2', 'S100a2', 'Krt17', 'Sox4', 'Lamb3', 'Itga2', 'Palld', 'Cdh3', 'Plau'), group.by = 'cell_type')$data
+
+dotplot_data_mouse$id <- factor(dotplot_data_mouse$id,
+                                levels = c('AT2', 'DATP-1', 'DATP-2'))
+
+# using ggplot to have better control
+p1 = ggplot(dotplot_data_mouse, aes(x = features.plot, y = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), 
+             shape = 21, color = "black", stroke = 0.3) +
+  scale_fill_gradient2(low = "#1f77b4", mid = "white", high = "#d62728", midpoint = 0) +
+  scale_size(range = c(1, 6)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+    axis.text.x = element_blank(),
+#    axis.text.x = element_text(size = 12, angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y = element_blank(),  
+    axis.title = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  labs(size = "% Expressed", fill = "Average Expression")
+p1
+
+p2 = ggarrange(p, p1,
+          ncol = 1, nrow = 2,
+          align = "v",
+          common.legend = TRUE, 
+          legend = "bottom",
+          heights = c(1, 1))
+p2
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4g.png', plot = p2, dpi = 300, units = 'mm', width = 120, height = 100)
+```
+
+```{r}
+#Fig.4h
+df = perturb_TF@meta.data
+# df must have: gene, cell_type (one row per cell)
+# control_name is your NTC label (e.g., "NonTargetingControlGuideForMouse")
+
+enrichment_vs_ntc <- function(target_state, control_name = "NonTargetingControlGuideForMouse",
+                              min_total = 100) {
+  stopifnot(is.character(target_state), length(target_state)==1)
+
+  # Wide gene × state counts
+  wide <- df %>%
+    count(gene, cell_type, name = "n") %>%
+    pivot_wider(names_from = cell_type, values_from = n, values_fill = 0) %>%
+    mutate(row_total = rowSums(across(-gene)))
+
+  # Find the NTC row (fallback: try a regex if exact label not found)
+  if (!(control_name %in% wide$gene)) {
+    cand <- wide$gene[grepl("non|ntc|control", wide$gene, ignore.case = TRUE)]
+    if (length(cand) == 0) stop("NTC not found. Set control_name to your NTC label.")
+    control_name <- cand[1]
+    message("Using detected NTC label: ", control_name)
+  }
+  ntc <- wide %>% filter(gene == control_name) %>% slice(1)
+  if (nrow(ntc) == 0) stop("NTC row missing after pivot.")
+
+  # NTC counts for target vs OTHER
+  ntc_target <- ntc[[target_state]]
+  ntc_other  <- ntc$row_total - ntc_target
+
+  # For each gene, build 2x2: rows=(gene vs NTC), cols=(target_state vs OTHER)
+  out <- wide %>%
+    filter(gene != control_name, row_total >= min_total,) %>%
+    mutate(
+      a = .data[[target_state]],           # gene in target
+      b = row_total - a,                   # gene in OTHER
+      c = ntc_target,                      # NTC in target
+      d = ntc_other                        # NTC in OTHER
+    ) %>%
+    rowwise() %>%
+    mutate(
+      ft = list(fisher.test(matrix(c(a, b, c, d), nrow = 2, byrow = TRUE))),
+      OR = as.numeric(ft$estimate),
+      p  = ft$p.value
+    ) %>%
+    ungroup() %>%
+    dplyr::select(gene, a, b, c, d, OR, p) %>%
+    mutate(FDR = p.adjust(p, "BH")) %>%
+    arrange(desc(OR))
+
+  return(out)
+}
+
+# Run for DATP-like-1 and DATP-like-2
+res_datp1 <- enrichment_vs_ntc("DATP-1", control_name = "NonTargetingControlGuideForMouse", min_total = 100)
+res_datp2 <- enrichment_vs_ntc("DATP-2", control_name = "NonTargetingControlGuideForMouse", min_total = 100)
+
+#res_datp1 <- res_datp1 %>% mutate(gene = as.character(gene))
+#res_datp2 <- res_datp2 %>% mutate(gene = as.character(gene))
+
+df <- res_datp1 %>%
+  transmute(gene, OR1 = OR, FDR1 = FDR) %>%
+  inner_join(res_datp2 %>% transmute(gene, OR2 = OR, FDR2 = FDR), by = "gene") %>%
+  mutate(
+    log2OR1 = log2(OR1),
+    log2OR2 = log2(OR2),
+    hit1_enrich = OR1 > 2 & FDR1 < 0.1,
+    hit1_deplete = OR1 < 0.5 & FDR1 < 0.1,
+    hit2_enrich = OR2 > 2 & FDR2 < 0.1,
+    hit2_deplete = OR2 < 0.5 & FDR2 < 0.1,
+    hit1 = hit1_enrich | hit1_deplete,
+    hit2 = hit2_enrich | hit2_deplete,
+    category = dplyr::case_when(
+      hit1 & hit2 ~ "Hit in both",
+      hit1        ~ "DATP-1 hit",
+      hit2        ~ "DATP-2 hit",
+      TRUE        ~ "Other"
+    ),
+    label = ifelse(category == "Other", NA, gene),
+    is_labeled = ifelse(is.na(label), "Unlabeled", "Labeled")
+  )
+
+p = ggplot(df, aes(x = log2OR1, y = log2OR2)) +
+  # background neutral zone (optional)
+  geom_rect(aes(xmin = log2(0.5), xmax = log2(2), ymin = -Inf, ymax = Inf),
+            fill = "gray95", alpha = 0.5, inherit.aes = FALSE) +
+  geom_rect(aes(ymin = log2(0.5), ymax = log2(2), xmin = -Inf, xmax = Inf),
+            fill = "gray95", alpha = 0.5, inherit.aes = FALSE) +
+  # points
+  geom_point(aes(color = category, size = is_labeled), alpha = 0.9) +
+  scale_size_manual(values = c(Labeled = 3.5, Unlabeled = 2), guide = "none") +
+  scale_color_manual(values = c(
+    "Hit in both" = "#9467BD",  # purple
+    "DATP-1 hit"  = "#1F77B4",  # blue
+    "DATP-2 hit"  = "#d62728",  # red
+    "Other"       = "gray70"
+  )) +
+  # label only hits
+  geom_text_repel(
+    aes(label = label),
+    size = 3,
+    box.padding = 0.35,
+    point.padding = 0.25,
+    segment.size = 0.2,
+    segment.alpha = 0.6,
+    max.overlaps = Inf,
+    seed = 42
+  ) +
+  # reference lines
+  geom_vline(xintercept = log2(2),   linetype = "dashed", linewidth = 0.3) +
+  geom_vline(xintercept = log2(0.5), linetype = "dashed", linewidth = 0.3) +
+  geom_hline(yintercept = log2(2),   linetype = "dashed", linewidth = 0.3) +
+  geom_hline(yintercept = log2(0.5), linetype = "dashed", linewidth = 0.3) +
+#  geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+#  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+#  coord_equal() +
+  labs(
+    x = "log2(OR) — DATP-like-1",
+    y = "log2(OR) — DATP-like-2",
+    color = "Category",
+    title = "Regulator effects across DATP-like states"
+  ) +
+  xlim(c(-3.5, 3.5))+
+  ylim(c(-3.5, 3.5))+
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    axis.ticks = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(0.1, "cm"),
+    axis.line = element_blank()
+  )
+p
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4h.png', plot = p, units = 'mm', dpi = 300, width = 130, height = 100)
+```
+
+```{r}
+#Fig.4i
+###mouse DATP-like-1 and DATP-like-2
+nfkb_str <- "Mcl1,Cd80,Traf1,F2rl1,Dusp2,Tnc,Fosl2,Stat5a,Vegfa,Efna1,Relb,Rela,Cebpd,Ptger4,Cdkn1a,Ptx3,Il15ra,Atp2b1,Nfkbia,Tnf,Ier3,Ier2,Hes1,Tnfaip2,Dusp1,Eif1,Fosl1,Bcl6,Ifngr2,Tank,Gadd45b,Gadd45a,Tubb2a,Sqstm1,Il18,Rhob,Cxcl1,Btg2,Nfe2l2,Tsc22d1,Irs2,Atf3,Nfil3,Btg3,Jag1,Ackr3,Cxcl5,Phlda1,Bhlhe40,Per1,Plk2,Nfkb2,Tnfsf9,Tnfrsf9,Klf10,Tgif1,Nfkbie,Tnfaip6,Tnfaip3,Ninj1,Birc3,Birc2,Smad3,Dennd5a,Socs3,Phlda2,Olr1,Snn,Bcl2a1d,Egr3,Sphk1,G0s2,Cd83,Ccl20,Klf9,Msc,Cflar,Ier5,Gfpt2,Csf2,Csf1,Sgk1,Cxcl2,Ehd1,Fjx1,Klf4,Klf2,Tlr2,Klf6,Map2k3,Map3k8,Sdc4,Cxcl10,Nr4a1,Nr4a2,Nr4a3,Icosl,Nfat5,Panx1,Cxcl11,Plek,Rcan1,Ripk2,Dnajb4,Plpp3,Pnrc1,Kynu,Ifih1,Dram1,Ccrl2,Spsb1,Rnf19b,Ccnl1,Tnip1,Ppp1r15a,B4galt5,Pdlim5,Litaf,Pmepa1,Nampt,Clcf1,Il23a,Zbtb10,Slc16a6,Trip10,Tnfaip8,Tiparp,Pfkfb3,Zc3h12a,Tnip2,Yrdc,Gpr183,Dusp4,Rigi,Slc2a6,Trib1,Kdm6b,Dusp5,Areg,Bcl3,Bmp2,Btg1,Ccnd1,Cd44,Cd69,Cebpb,F3,Ccn1,Serpinb8,Edn1,Egr1,Egr2,Ets2,Fos,Fosb,Fut4,Gch1,B4galt1,Slc2a3,Hbegf,Icam1,Id2,Il12b,Il1a,Il1b,Il6,Il6st,Il7r,Inhba,Irf1,Jun,Junb,Ldlr,Lif,Marcks,Mxd1,Maff,Myc,Nfkb1,Serpine1,Serpinb2,Plau,Plaur,Ptgs2,Ptpre,Rel,Sat1,Ccl5,Sod2,Tap1,Zfp36,Ifit2,Pde4b,Abca1,Gem,Lamb3"
+
+nfkb_genes <- unique(trimws(unlist(strsplit(nfkb_str, ","))))
+# Keep only genes present in your object
+present_nfkb <- intersect(nfkb_genes, rownames(perturb_TF))
+message(sprintf("NF-kB genes present: %d / %d", length(present_nfkb), length(nfkb_genes)))
+
+# Add UCell score (column will be 'NFKB_UCell' in meta.data)
+perturb_TF <- AddModuleScore_UCell(perturb_TF, features = list(NFKB = present_nfkb))
+
+df <- perturb_TF@meta.data %>%
+  mutate(NFKB_UCell = NFKB_UCell) %>%
+  filter(cell_type %in% c("DATP-1","DATP-2")) %>%
+  mutate(state = factor(cell_type, levels = c("DATP-1","DATP-2")))
+
+# Wilcoxon test
+print(wilcox.test(NFKB_UCell ~ state, data = df))
+
+# Violin + box, with clean outline + short ticks (matches your style)
+p = ggplot(df, aes(x = state, y = NFKB_UCell, fill = state)) +
+  geom_violin(trim = TRUE, color = "black", linewidth = 0.4) +
+  geom_boxplot(width = 0.18, outlier.size = 0.4, color = "black") +
+  scale_fill_manual(values = c("DATP-1" = "#9467bd", "DATP-2" = "#c5b0d5")) +
+  labs(x = NULL, y = "NF-κB activity (UCell score)") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    axis.ticks = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(0.1, "cm"),
+    legend.position = "none"
+  )
+p
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4i_mouse.png', plot = p, units = 'mm', dpi = 300, width = 60, height = 80)
+
+###human basaloid and transitional AT2
+NFKB_str <- "ABCA1,AREG,ATF3,ATP2B1,B4GALT1,B4GALT5,BCL2A1,BCL3,BCL6,BHLHE40,BIRC2,BIRC3,BMP2,BTG1,BTG2,BTG3,CCL2,CCL20,CCL4,CCL5,CCND1,CCNL1,CCRL2,CD44,CD69,CD80,CD83,CDKN1A,CEBPB,CEBPD,CFLAR,CLCF1,CSF1,CSF2,CXCL1,CXCL10,CXCL11,CXCL2,CXCL3,CXCL6,ACKR3,CCN1,RIGI,DENND5A,DNAJB4,DRAM1,DUSP1,DUSP2,DUSP4,DUSP5,EDN1,EFNA1,EGR1,EGR2,EGR3,EHD1,EIF1,ETS2,F2RL1,F3,FJX1,FOS,FOSB,FOSL1,FOSL2,FUT4,G0S2,GADD45A,GADD45B,GCH1,GEM,GFPT2,GPR183,HBEGF,HES1,ICAM1,ICOSLG,ID2,IER2,IER3,IER5,IFIH1,IFIT2,IFNGR2,IL12B,IL15RA,IL18,IL1A,IL1B,IL23A,IL6,IL6ST,IL7R,INHBA,IRF1,IRS2,JAG1,JUN,JUNB,KDM6B,KLF10,KLF2,KLF4,KLF6,KLF9,KYNU,LAMB3,LDLR,LIF,LITAF,MAFF,MAP2K3,MAP3K8,MARCKS,MCL1,MSC,MXD1,MYC,NAMPT,NFAT5,NFE2L2,NFIL3,NFKB1,NFKB2,NFKBIA,NFKBIE,NINJ1,NR4A1,NR4A2,NR4A3,OLR1,PANX1,PDE4B,PDLIM5,PER1,PFKFB3,PHLDA1,PHLDA2,PLAU,PLAUR,PLEK,PLK2,PMEPA1,PNRC1,PLPP3,PPP1R15A,PTGER4,PTGS2,PTPRE,PTX3,RCAN1,REL,RELA,RELB,RHOB,RIPK2,RNF19B,SAT1,SDC4,SERPINB2,SERPINB8,SERPINE1,SGK1,SIK1,SLC16A6,SLC2A3,SLC2A6,SMAD3,SNN,SOCS3,SOD2,SPHK1,SPSB1,SQSTM1,STAT5A,TANK,TAP1,TGIF1,TIPARP,TLR2,TNC,TNF,TNFAIP2,TNFAIP3,TNFAIP6,TNFAIP8,TNFRSF9,TNFSF9,TNIP1,TNIP2,TRAF1,TRIB1,TRIP10,TSC22D1,TUBB2A,VEGFA,YRDC,ZBTB10,ZC3H12A,ZFP36"
+
+NFKB_genes <- unique(trimws(unlist(strsplit(NFKB_str, ","))))
+# Keep only genes present in your object
+present_NFKB <- intersect(NFKB_genes, rownames(IPF_Epi_sub))
+message(sprintf("NF-kB genes present: %d / %d", length(present_NFKB), length(NFKB_genes)))
+
+# Add UCell score (column will be 'NFKB_UCell' in meta.data)
+IPF_Epi_sub <- AddModuleScore_UCell(IPF_Epi_sub, features = list(NFKB = present_NFKB))
+
+df <- IPF_Epi_sub@meta.data %>%
+  mutate(NFKB_UCell = NFKB_UCell) %>%
+  filter(celltype %in% c("Transitional AT2","KRT5-/KRT17+")) %>%
+  mutate(state = factor(celltype, levels = c("Transitional AT2","KRT5-/KRT17+")))
+
+# Wilcoxon test
+print(wilcox.test(NFKB_UCell ~ state, data = df))
+
+# Violin + box, with clean outline + short ticks (matches your style)
+p = ggplot(df, aes(x = state, y = NFKB_UCell, fill = state)) +
+  geom_violin(trim = TRUE, color = "black", linewidth = 0.4) +
+  geom_boxplot(width = 0.18, outlier.size = 0.4, color = "black") +
+  scale_fill_manual(values = c("Transitional AT2" = "#8c564b", "KRT5-/KRT17+" = "#c49c94")) +
+  labs(x = NULL, y = "NF-κB activity (UCell score)") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    axis.ticks = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(0.1, "cm"),
+    legend.position = "none"
+  )
+p
+
+ggsave('/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.4i_human.png', plot = p, units = 'mm', dpi = 300, width = 60, height = 80)
+
+
+
+```
+
