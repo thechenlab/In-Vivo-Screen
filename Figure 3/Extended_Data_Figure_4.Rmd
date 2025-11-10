@@ -1,0 +1,302 @@
+---
+title: "Extended Data Figure 4"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+library(qs)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(purrr)
+library(tibble)
+library(tidyr)
+library(fgsea)
+library(ggpubr)
+```
+
+
+```{r}
+#Extended Data Fig. 4d
+Alv = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv.qs')
+
+#seurat_clusters == 2 is AT2-2 and 0, 1, 3, 5, 7, 8 are AT2-1
+summary = Alv@meta.data %>% group_by(seurat_clusters, target_gene) %>% summarise(n = n())
+
+# Fisher's Exact test for target genes in NSL essential + Kat8
+# STEP 1: Clean up your input data
+df_filtered <- summary %>%
+  filter(!is.na(target_gene)) %>%
+  filter(seurat_clusters %in% c(0:3, 5, 7, 8)) %>%
+  mutate(is_cluster2 = seurat_clusters == 2)
+
+# STEP 2: List of all target genes (excluding Control)
+gene_list <-  c("Kansl1", "Kansl2", "Kansl3", "Wdr5", "Mcrs1", "Hcfc1", 'Kat8')
+
+# STEP 3: Run enrichment test for each gene vs. Control in cluster 2
+enrichment_vs_control <- map_dfr(gene_list, function(gene) {
+  # Subset to gene + control
+  df_subset <- df_filtered %>%
+    filter(target_gene %in% c(gene, "Control")) %>%
+    mutate(
+      is_gene = target_gene == gene,
+      is_control = target_gene == "Control"
+    )
+
+  # Build weighted contingency table
+  contingency <- df_subset %>%
+    group_by(is_cluster2, is_gene) %>%
+    summarise(count = sum(n), .groups = "drop") %>%
+    pivot_wider(names_from = is_gene, values_from = count, values_fill = 0) %>%
+    column_to_rownames("is_cluster2") %>%
+    as.matrix()
+
+  # Skip if not a 2x2 table
+  if (!all(dim(contingency) == c(2, 2))) {
+    return(tibble(
+      gene = gene,
+      p_value = NA_real_,
+      odds_ratio = NA_real_,
+      log2_enrichment = NA_real_
+    ))
+  }
+
+  # Extract counts
+  # Rows: NotCluster2 / Cluster2
+  # Columns: is_gene FALSE (Control) / TRUE (Gene)
+  a <- contingency["FALSE", "FALSE"]  # Not cluster2, Control
+  b <- contingency["FALSE", "TRUE"]   # Not cluster2, Gene
+  c <- contingency["TRUE", "FALSE"]   # Cluster2, Control
+  d <- contingency["TRUE", "TRUE"]    # Cluster2, Gene
+
+  # Construct table for Fisher's test (Control | Gene)
+  manual_table <- matrix(c(a, c, b, d), nrow = 2, byrow = FALSE)
+  colnames(manual_table) <- c("Control", "Gene")
+  rownames(manual_table) <- c("NotCluster2", "Cluster2")
+
+  # Fisher's test
+  fisher <- fisher.test(manual_table)
+
+  # Calculate enrichment
+  odds <- (d * a) / (b * c)
+  log2_odds <- log2(odds)
+
+  tibble(
+    gene = gene,
+    p_value = fisher$p.value,
+    odds_ratio = odds,
+    log2_enrichment = log2_odds
+  )
+})
+
+# STEP 4: Adjust p-values
+enrichment_vs_control <- enrichment_vs_control %>%
+  mutate(adj_p = p.adjust(p_value, method = "fdr")) %>%
+  arrange(p_value)
+
+###plotting using ggplot
+# STEP 1: Cap p-values to avoid -Inf on log scale
+volcano_df <- enrichment_vs_control %>%
+  mutate(
+    p_value_capped = ifelse(p_value < 1e-50, 1e-50, p_value),
+    neg_log10_p = -log10(p_value_capped),
+    significant = ifelse(adj_p < 0.1 & log2_enrichment > 1, "Significant", "NS")
+  )
+
+p = ggplot(enrichment_vs_control, aes(x = reorder(gene, log2_enrichment), y = log2_enrichment, fill = adj_p < 0.1)) +
+  geom_col(width = 0.6, color = "black", linewidth = 0.3) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#2b8cbe", "FALSE" = "#ece7f2")) +
+  labs(
+    x = NULL,
+    y = "Log2 enrichment vs. control",
+    fill = "FDR < 0.1"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),  # remove gridlines
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.3),  # outer box
+    axis.line = element_line(color = "black", linewidth = 0.3),  # add axis lines
+    axis.ticks = element_line(color = "black", linewidth = 0.3),  # add ticks
+    axis.ticks.length = unit(2, "pt"),  # control tick size
+    axis.text = element_text(color = "black", size = 11),
+    axis.title = element_text(size = 12),
+    legend.position = "top"
+  )
+p
+
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.4d.png", plot = p, width = 120, height = 80, units = 'mm', dpi = 300)
+```
+
+```{r}
+#Extended Data Fig. 4e
+
+##load in DEgene list
+Alv.marker_2_vs_01378 = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv_DE.csv', row.names = 1)
+
+# Prepare ranked gene list
+Alv.marker_2_vs_01378$gene = row.names(Alv.marker_2_vs_01378)
+ranks <- Alv.marker_2_vs_01378$avg_log2FC
+names(ranks) <- Alv.marker_2_vs_01378$gene
+ranks <- sort(ranks, decreasing = TRUE)
+
+# Profibrotic secretory genes
+secretome_profibrotic_genes <- c(
+  "Tgfb1", "Tgfb2", "Tgfb3", "Il6", "Il11", "Il13", "Il33",
+  "Ctgf", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd",
+  "Gdf15", "Gdf11", "Gdf5", "Fgf1", "Fgf2", "Fgf9", "Fgf18",
+  "Wisp1", "Wnt1", "Wnt2", "Wnt3a", "Wnt5a", "Wnt7a", "Wnt10b",
+  "Bmp1", "Bmp2", "Ccl2", "Ccl5", "Ccl11", "Ccl17", "Ccl18", "Ccl22",
+  "Cxcl1", "Cxcl5", "Cxcl12", "Cxcl14", 'Retnla',
+  "Postn", "Spp1", "Tgfbi", "Thbs1", "Thbs2", "Thbs4", "Sparc",
+  "Serpine1", "Serpinh1", "Serpinb2", "Serpina3n",
+  "Timp1", "Timp2", "Chi3l1", "Saa1", "Saa3", "S100a4", "S100a8", "S100a9", "Lgals3",
+  "Mmp2", "Mmp3", "Mmp7", "Mmp9", "Mmp12", "Mmp14",
+  "Ptx3", "Igfbp3", "Igfbp4", "Igfbp5", "Igfbp6",
+  "Angptl2", "Angptl4", "Edn1", "Adm",
+  "Hgf", "Areg", "Vegfa", "Vegfb", "Nppb",
+  "Il17a", "Il4", "Il21", "Tnfa", "Tnfsf10", "Tnfsf13b",
+  "Grem1", "Grem2", "Osm", "Bgn", "Adamts4"
+)
+
+# Anti-fibrotic secretory genes
+secretome_antifibrotic_genes <- c(
+  "Bmp7", "Fst", "Fstl1", "Il10", "Il1rn", "Socs3", "Cxcl10", "Cxcl9", "Cxcl11", 
+  "Ifng", "Hgf", "Adipoq", "Decorin", "Klotho", "Slit2", "Sfrp1", "Sfrp2", 
+  "Grem1", "Thbs4", "Angpt1", "Timp3", "Fgf10", "Fgf7", "Igfbp2", "Igfbp4",
+  "Nrg1", "Apoe", "Ccn5", "Ccl5", "Ccl7", "Ccl11", "Chil3", "Sod3",
+  "Serpina1e", "Serpina3g", "Serpinf1", "Mmp8", "Mmp19", "Mmp28", "Tnfsf10", 
+  "Vstm2a", "Ace2", "Anxa1", "Tnfaip6", "Hamp", "Pentraxin3",
+  "Nppb", "Nppa", "Lcn2", "Il22", "Wnt7b", "Wnt11", "Socs1", "Socs6",
+  "Bmp5", "Ndnf", "Ntn1", "Tslp", "Tnfrsf11b", "Tnfrsf14", "Lif", "Lepr", "Osm", "Gdf10", "Fgl1", "Ptx3", "Agt", "Aqp1", "Il24", "Ltf", "Hpx", "Itih4", "Serpina3n", "Nrg4")
+
+gene_sets <- list(
+  Secretome_Profibrotic = secretome_profibrotic_genes,
+  Secretome_Antifibrotic = secretome_antifibrotic_genes
+)
+
+plot_custom_gsea <- function(pathway_genes, ranks, title, NES = NULL, pval = NULL) {
+  ranks <- sort(ranks, decreasing = TRUE)
+  gene_set <- intersect(pathway_genes, names(ranks))
+  if (length(gene_set) == 0) stop("No overlap between pathway_genes and ranked list.")
+
+  hits <- names(ranks) %in% gene_set
+  N <- length(ranks)
+  Nh <- sum(hits)
+
+  # Compute enrichment profile
+  score_hit <- abs(ranks[hits]) / sum(abs(ranks[hits]))
+  score_miss <- 1 / (N - Nh)
+  es_profile <- numeric(N)
+  running_score <- 0
+
+  for (i in seq_along(ranks)) {
+    if (hits[i]) {
+      running_score <- running_score + abs(ranks[i]) / sum(abs(ranks[hits]))
+    } else {
+      running_score <- running_score - score_miss
+    }
+    es_profile[i] <- running_score
+  }
+
+  df_es <- data.frame(
+    Rank = seq_along(ranks),
+    EnrichmentScore = es_profile
+  )
+
+  df_hits <- data.frame(
+    Rank = which(hits),
+    Gene = names(ranks)[hits]
+  )
+
+  df_metric <- data.frame(
+    Rank = seq_along(ranks),
+    Metric = as.numeric(ranks)
+  )
+
+  # Top panel: enrichment curve
+  p1 <- ggplot(df_es, aes(x = Rank, y = EnrichmentScore)) +
+    geom_line(color = "forestgreen", size = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+#    geom_vline(xintercept = which.max(df_es$EnrichmentScore), 
+#               color = "red", linetype = "dotted") +
+    theme_pubr(base_size = 14) +
+    theme(
+      axis.title.x = element_blank(),
+      plot.margin = margin(5, 5, 0, 5)
+    )
+
+#  if (!is.null(NES) & !is.null(pval)) {
+#    p1 <- p1 + annotate("text", x = Inf, y = Inf,
+#                        label = paste0("NES = ", round(NES, 2), 
+#                                       "\nFDR = ", signif(pval, 2)),
+#                        hjust = 1.1, vjust = 1.3,
+#                        size = 4.5, fontface = "italic")
+#  }
+
+  p3 <- ggplot(df_metric, aes(x = Rank, y = Metric)) +
+  geom_col(fill = "grey80", width = 1) +
+  
+  # Short vertical tick mark
+  geom_segment(
+    data = df_hits,
+    aes(x = Rank, xend = Rank, y = 0, yend = -0.3),
+    color = "black", size = 0.4
+  ) +
+
+   #Vertical gene labels
+  geom_text_repel(
+    data = df_hits,
+    aes(x = Rank, y = -0.5, label = Gene),
+    size = 3,
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1,
+    direction = "x",
+    segment.color = NA,
+    max.overlaps = Inf,
+    box.padding = 0.2
+  ) +
+
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_pubr(base_size = 14) +
+  theme(
+    axis.text = element_text(color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+    plot.margin = margin(0, 5, 5, 5)
+  ) +
+  labs(x = "Ranked Genes", y = "Ranked Metric")
+
+  # Combine
+  combined <- ggarrange(p1, p3, ncol = 1, heights = c(2.2, 2), align = "v") +
+  ggtitle(title) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+  return(combined)
+}
+
+p = plot_custom_gsea(
+  pathway_genes = gene_sets$Secretome_Profibrotic,
+  ranks = ranks,
+  title = "GSEA: Secretome Profibrotic Signature",
+  NES = NES_pro,
+  pval = padj_pro
+)
+
+p1 = plot_custom_gsea(
+  pathway_genes = gene_sets$Secretome_Antifibrotic,
+  ranks = ranks,
+  title = "GSEA: Secretome Antifibrotic Signature",
+)
+
+
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.4e_profibrotic.png", plot = p, width = 200, height = 150, units = 'mm',dpi = 300)
+
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Extended_Data_Fig.4e_antifibrotic.png", plot = p1, width = 200, height = 150, units = 'mm',dpi = 300)
+
+```
+
+
+

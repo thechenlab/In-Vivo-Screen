@@ -1,0 +1,282 @@
+---
+title: "Figure 3"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r}
+##loading packages
+library(qs)
+library(Seurat)
+library(ggplot2)
+library(ShortRead)
+library(scales)
+library(dplyr)
+library(ggrepel)
+```
+
+```{r}
+#Fig.3c
+PerturbSeq = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/MSLNSL.qs')
+tab20_colors <- c(
+  "#1f77b4", "#aec7e8",  # blue
+  "#ff7f0e", "#ffbb78",  # orange
+  "#2ca02c", "#98df8a",  # green
+  "#d62728", "#ff9896",  # red
+  "#9467bd", "#c5b0d5",  # purple
+  "#8c564b", "#c49c94",  # brown
+  "#e377c2", "#f7b6d2",  # pink
+  "#7f7f7f", "#c7c7c7",  # gray
+  "#bcbd22", "#dbdb8d",  # olive
+  "#17becf", "#9edae5"   # cyan
+)
+
+p <- DimPlot(
+  PerturbSeq,
+  reduction = "umap",
+  group.by = "cell_type",
+  label.size = 4,
+  repel = TRUE,
+  cols = tab20_colors
+) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10)
+  )
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.3c.png", plot = p, width = 200, height = 175, units = 'mm',dpi = 300)
+```
+
+```{r}
+#Fig.3d
+
+##processing plasmid library
+R1 <- readFastq('/Users/dsun/Desktop/In_vivo_screen_manuscript/MSL_NSL_plasmid_S1_L001_R1_001.fastq.gz')
+R1 = as.data.frame(sread(R1))
+colnames(R1) = 'seq'
+gRNA = substring(R1$seq, 26, 45)
+gRNA = as.data.frame(gRNA)
+ref = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/feature-ref.csv')
+ref$plasmid = 0
+
+for(i in 1: nrow(ref)){
+  ref$plasmid[i] = sum(gRNA$gRNA == ref$sequence[i])
+}
+
+plasmid_sum = ref %>%
+  group_by(target_gene) %>%
+  summarise(n = sum(plasmid))
+plasmid_sum$per = plasmid_sum$n/sum(plasmid_sum$n)*100
+
+gRNAeff_sum = PerturbSeq@meta.data %>% 
+  group_by(target_gene, seurat_clusters, cell_type) %>% 
+  summarise(n = n()) %>%
+  ungroup()
+
+gRNAeff_sum = gRNAeff_sum[gRNAeff_sum$cell_type %in% c('AT2', 'AT1'), ]
+gRNAeff_sum = gRNAeff_sum[!is.na(gRNAeff_sum$target_gene), ]
+
+sc_sum = gRNAeff_sum %>%
+  group_by(target_gene, cell_type) %>%
+  summarise(n = sum(n))
+
+sc_sum$group = 'control'
+sc_sum[sc_sum$target_gene %in% c('Msl1', 'Msl2', 'Msl3'), ]$group = 'MSL'
+sc_sum[sc_sum$target_gene %in% c('Kat8'), ]$group = 'Kat8'
+sc_sum[sc_sum$target_gene %in% c('Kansl1', 'Kansl2', 'Kansl3', 'Wdr5', 'Hcfc1', 'Mcrs1'), ]$group = 'NSL_core'
+sc_sum[sc_sum$target_gene %in% c('Phf20', 'Phf20l1'), ]$group = 'NSL_other'
+
+plasmid_sum$group = 'control'
+plasmid_sum[plasmid_sum$target_gene %in% c('Msl1', 'Msl2', 'Msl3'), ]$group = 'MSL'
+plasmid_sum[plasmid_sum$target_gene %in% c('Kat8'), ]$group = 'Kat8'
+plasmid_sum[plasmid_sum$target_gene %in% c('Kansl1', 'Kansl2', 'Kansl3', 'Wdr5', 'Hcfc1', 'Mcrs1'), ]$group = 'NSL_core'
+plasmid_sum[plasmid_sum$target_gene %in% c('Phf20', 'Phf20l1'), ]$group = 'NSL_other'
+
+sc_sum_complex = sc_sum %>%
+  group_by(group, cell_type) %>%
+  summarise(n = sum(n))
+
+sc_sum_complex = sc_sum_complex %>%
+  group_by(cell_type) %>%
+  mutate(per = n/sum(n)*100)
+
+plasmid_sum = plasmid_sum %>%
+  group_by(group) %>%
+  summarise(n = sum(n))
+
+plasmid_sum$per = plasmid_sum$n/sum(plasmid_sum$n)*100
+
+plasmid_sum$cell_type = 'library'
+
+plot_sum = rbind(sc_sum_complex, plasmid_sum)
+
+color_use <- c(
+  '#c7c7c7', "#d62728", "#ff7f0e", "#ff9896", "#aec7e8", "#1f77b4"
+)
+group_levels <- unique(plot_sum$group)
+names(tab20_colors) <- group_levels
+
+plot_sum$cell_type <- factor(plot_sum$cell_type, levels = c('library', 'AT2', 'AT1'))
+plot_sum$group <- factor(plot_sum$group, levels = c("control", "Kat8", "NSL_core", "NSL_other", "MSL"))
+
+p = ggplot(plot_sum, aes(x = cell_type, y = per, fill = group)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5, color = "black") +
+  xlab("groups") +
+  ylab("fraction") +
+  scale_fill_manual(values = color_use)+
+# scale_fill_viridis_d()+
+  theme(legend.title = element_blank()) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, hjust=0.95, vjust=0.5),
+        axis.text.y = element_text(size = 12),
+        panel.grid = element_blank(),
+        )
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.3d.png", plot = p, width = 125, height = 100, units = 'mm',dpi = 300)
+```
+
+```{r}
+#Fig. 3f
+Alv = qread('/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv.qs')
+
+##Overall umap
+p = DimPlot(Alv, reduction = 'umap', group.by = 'cell_type', cols = tab20_colors) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10),
+    plot.title = element_blank()
+  )
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Fig.3e_umap.png", plot = p, width = 200, height = 175, units = 'mm',dpi = 300)
+
+#NSL essential
+Alv$gRNAflag = 'Other'
+Alv@meta.data[Alv@meta.data$target_gene %in% c('Kansl1', 'Kansl2', 'Kansl3', 'Wdr5', 'Mcrs1', 'Hcfc1'), ]$gRNAflag = 'NSL_essential'
+Alv$gRNAflag <- factor(Alv$gRNAflag, levels = c('Other', 'NSL_essential'))
+
+umap_df <- Embeddings(Alv, "umap") %>%
+  as.data.frame()
+umap_df$cell <- rownames(umap_df)
+umap_df$gRNAflag <- Alv$gRNAflag[rownames(umap_df)]
+
+df_grey <- subset(umap_df, gRNAflag == "Other")
+df_NSL_essential <- subset(umap_df, gRNAflag == "NSL_essential")
+
+p = ggplot() +
+  geom_point(data = df_grey, aes(x = umap_1, y = umap_2), 
+             color = "#d7d7d7", size = 0.3) +
+  geom_point(data = df_NSL_essential, aes(x = umap_1, y = umap_2), 
+             color = "#ff7f0e", size = 1.2) +  # larger size
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/NSL_essential_gRNAs.png", plot = p, width = 175, height = 175, units = 'mm',dpi = 300)
+
+##Kansl1 gRNAs
+Alv@meta.data$gRNAflag = 'Other'
+Alv@meta.data[Alv@meta.data$target_gene %in% 'Kansl1', ]$gRNAflag = 'Kansl1'
+Alv@meta.data$gRNAflag <- factor(Alv@meta.data$gRNAflag, levels = c('Other', 'Kansl1'))
+umap_df <- Embeddings(Alv, "umap") %>%
+  as.data.frame()
+umap_df$cell <- rownames(umap_df)
+umap_df$gRNAflag <- Alv$gRNAflag[rownames(umap_df)]
+
+df_grey <- subset(umap_df, gRNAflag == "Other")
+df_kansl1 <- subset(umap_df, gRNAflag == "Kansl1")
+
+p = ggplot() +
+  geom_point(data = df_grey, aes(x = umap_1, y = umap_2), 
+             color = "#d7d7d7", size = 0.3) +
+  geom_point(data = df_kansl1, aes(x = umap_1, y = umap_2), 
+             color = "#8c564b", size = 1.2) +  # larger size
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv_Kansl1_gRNA.png", plot = p, width = 175, height = 175, units = 'mm',dpi = 300)
+
+##Wdr5 gRNAs
+Alv@meta.data$gRNAflag = 'Other'
+Alv@meta.data[Alv@meta.data$target_gene %in% 'Wdr5', ]$gRNAflag = 'Wdr5'
+Alv@meta.data$gRNAflag <- factor(Alv@meta.data$gRNAflag, levels = c('Other', 'Wdr5'))
+umap_df <- Embeddings(Alv, "umap") %>%
+  as.data.frame()
+umap_df$cell <- rownames(umap_df)
+umap_df$gRNAflag <- Alv$gRNAflag[rownames(umap_df)]
+
+df_grey <- subset(umap_df, gRNAflag == "Other")
+df_Wdr5 <- subset(umap_df, gRNAflag == "Wdr5")
+
+p = ggplot() +
+  geom_point(data = df_grey, aes(x = umap_1, y = umap_2), 
+             color = "#d7d7d7", size = 0.3) +
+  geom_point(data = df_Wdr5, aes(x = umap_1, y = umap_2), 
+             color = "#998ec3", size = 1.2) +  # larger size
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv_Wdr5_gRNA.png", plot = p, width = 175, height = 175, units = 'mm',dpi = 300)
+```
+
+```{r}
+##Fig. 3f
+Alv.marker_2_vs_01378 = read.csv('/Users/dsun/Desktop/In_vivo_screen_manuscript/Alv_DE.csv', row.names = 1)
+Alv.marker_2_vs_01378$adjusted_p <- -log10(Alv.marker_2_vs_01378$p_val_adj + 1e-100) + 
+                                    rnorm(nrow(Alv.marker_2_vs_01378), mean = 0, sd = 0.05)
+Alv.marker_2_vs_01378$gene = row.names(Alv.marker_2_vs_01378)
+Alv.marker_2_vs_01378$group = 'other'
+Alv.marker_2_vs_01378[Alv.marker_2_vs_01378$gene %in% c('Cdkn1a', 'Mdm2', 'Rchy1', 
+                                                        'Gadd45a', 'Gadd45b', 'Gadd45g', 'Ddit4', 
+                                                        'Txnip', 'Sfn', 'Rprm', 'Bax', 'Siva1', 
+                                                         'Rprm'), ]$group = 'Senescence'
+Alv.marker_2_vs_01378[Alv.marker_2_vs_01378$gene %in% c("Gdf15", "Tgfbi", "Lgals3", "Vegfb", "Bmp1", "Pdgfa", "Thbs1", 'Retnla'), ]$group = 'Profibrotic'
+
+Alv.marker_2_vs_01378[Alv.marker_2_vs_01378$gene %in% c('Aqp5', 'Ager'), ]$group = 'AT1'
+
+
+colors <- c("Senescence" = "#de77ae", "Profibrotic" = "#31a354", 'AT1' = '#17becf',"Other" = "gray70")
+
+p = ggplot(Alv.marker_2_vs_01378, aes(x = avg_log2FC, y = adjusted_p, color = group)) +
+  geom_jitter(aes(size = ifelse(group %in% c("Senescence", "Profibrotic", 'AT1'), 3, 1)), alpha = 0.6) +  # Plot all points
+  geom_text_repel(data = subset(Alv.marker_2_vs_01378, group %in% c('Senescence', 'Profibrotic', 'AT1')), aes(label = gene), size = 4, max.overlaps = 10, box.padding = 0.5) +  # Label selected genes only
+  scale_color_manual(values = colors) +  # Custom colors
+  labs(x = "X-axis Label", y = "-log10 p-value", title = "Gene Expression Plot")+
+  theme_bw()+
+  xlim(c(-3.5, 3.5)) +
+  theme(
+    panel.grid = element_blank(),
+    legend.text = element_text(size = 10)
+  )
+p
+ggsave("/Users/dsun/Desktop/In_vivo_screen_manuscript/NSL_volcano_new.png", plot = p, width = 258, height = 150, units = 'mm',dpi = 300)
+
+```
+
